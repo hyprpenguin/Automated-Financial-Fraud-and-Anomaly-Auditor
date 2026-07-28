@@ -86,6 +86,99 @@ app.post('/api/v1/fraud/validate', async (req, res) => {
     });
   }
 });
+app.post('/api/v1/fraud/database-sweep', async (req, res) => {
+  try {
+    console.log("Initiating Deep Database Sweep...");
+
+    const pendingTransactions = await Transactions.find({ status: 'PENDING' }).limit(10);
+
+    if (pendingTransactions.length === 0) {
+      return res.status(200).json({ message: "Database is clean. No pending transactions found.", auditedCount: 0 });
+    }
+
+    let auditedCount = 0;
+    let sweepResults = [];
+
+    
+    for (const tx of pendingTransactions) {
+      console.log(`Auditing existing DB record: ${tx.transactionID}`);
+      
+      const prompt = `You are an expert financial fraud detection AI. Analyze the provided transaction data.
+      
+      SPECIFIC RULES:
+      - Micro-transactions (under $2.00) at charities, generic online stores, or vague services are highly indicative of 'Card Testing' / 'Velocity Spike'. Flag them with a risk score above 75.
+      - Flag vague B2B descriptions (e.g., "consulting services", "digital assets") with generic LLC names (e.g., "Global Solutions LLC") with a risk score above 60.
+
+      CRITICAL RULE FOR patternFlag:
+      - If isMalicious is true or riskScore >= 60, patternFlag MUST be EXACTLY ONE of:
+      'Velocity Spike', 'Location Mismatch', or 'IP Anomaly'.
+      - Do NOT return 'None' if the transaction is flagged as high risk.
+      - If safe (riskScore < 60), set patternFlag to 'None'.
+      
+      Evaluate the transaction and return ONLY a valid JSON object (no markdown, no backticks):
+      {
+        "riskScore": <number 0-100>,
+        "isMalicious": <boolean true if riskScore is over 75>,
+        "patternFlag": "<Select EXACTLY ONE category if malicious: 'Velocity Spike', 'Location Mismatch', 'IP Anomaly'. If safe or low risk, set to 'None'>",
+        "justification": "<Brief explanation citing amount, merchant, or description>"
+      }
+
+      Transaction to analyze:
+      Amount: $${tx.amount}
+      Merchant: ${tx.merchant}
+      Description: ${tx.description}`;
+
+      
+      const result = await securityModel.generateContent(prompt);
+      const aiRawResponse = result.response.text().trim();
+      
+      let aiAnalysis = { riskScore: 90, status: "FLAGGED", justification: "Failed to parse AI response" };
+      try {
+        const cleanJson = aiRawResponse.replace(/^```json\s*|```$/g, '');
+        aiAnalysis = JSON.parse(cleanJson);
+      } catch (parseError) {
+        console.warn("AI response parsing failed. Using default high-risk flag.");
+      }
+
+      const newStatus = aiAnalysis.isMalicious ? "FLAGGED" : "APPROVED";
+      const newRiskAssessment = {
+        riskScore: Number(aiAnalysis.riskScore) || 0,
+        isMalicious: Boolean(aiAnalysis.isMalicious),
+        patternFlag: aiAnalysis.patternFlag || "None", 
+        justification: aiAnalysis.justification || "No justification provided."
+      };
+
+      
+      await Transactions.updateOne(
+        { _id: tx._id },
+        { 
+          $set: { 
+            status: newStatus, 
+            aiRiskAssessment: newRiskAssessment 
+          } 
+        }
+      );
+
+
+      
+      tx.status = newStatus;
+      tx.aiRiskAssessment = newRiskAssessment;
+      
+      sweepResults.push(tx);
+      auditedCount++;
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Sweep Complete. Successfully audited ${auditedCount} records.`,
+      data: sweepResults
+    });
+
+  } catch (error) {
+    console.error("Sweep error:", error);
+    return res.status(500).json({ error: "Failed to complete database sweep." });
+  }
+});
 
 app.listen(3000, () => {
   console.log('Server is running on Port 3000.');
