@@ -179,6 +179,96 @@ app.post('/api/v1/fraud/database-sweep', async (req, res) => {
     return res.status(500).json({ error: "Failed to complete database sweep." });
   }
 });
+app.get('/api/v1/audit/metrics', async (req, res) => {
+  try {
+    
+    const totalTransactions = await Transactions.countDocuments();
+
+    
+    const totalReports = await Transactions.countDocuments({
+      "aiRiskAssessment.riskScore": { $exists: true }
+    });
+
+    
+    const inReview = await Transactions.countDocuments({ status: 'FLAGGED' });
+
+    
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const newIssuesToday = await Transactions.countDocuments({
+      status: 'FLAGGED',
+      createdAt: { $gte: startOfDay }
+    });
+
+    
+    const anomalyBreakdown = await Transactions.aggregate([
+      { $match: { status: 'FLAGGED' } },
+      { $group: { _id: "$aiRiskAssessment.patternFlag", count: { $sum: 1 } } }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalTransactions,
+        totalReports,
+        inReview,
+        newIssuesToday,
+        avgResolutionTime: 2.5,
+        anomalyBreakdown
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+
+app.get('/api/v1/audit/search', async (req, res) => {
+  try {
+    const { search, risk, status, flags } = req.query;
+    
+    
+    let dbQuery = {};
+
+    
+    if (search) {
+      dbQuery.$or = [
+        { userId: { $regex: search, $options: 'i' } },
+        { merchant: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    
+    if (status) {
+      const statusArray = status.split(',');
+      dbQuery.status = { $in: statusArray };
+    }
+
+    
+    if (risk) {
+      const riskArray = risk.split(',');
+      let riskConditions = [];
+      
+      if (riskArray.includes('low')) riskConditions.push({ "aiRiskAssessment.riskScore": { $lt: 40 } });
+      if (riskArray.includes('med')) riskConditions.push({ "aiRiskAssessment.riskScore": { $gte: 40, $lt: 75 } });
+      if (riskArray.includes('high')) riskConditions.push({ "aiRiskAssessment.riskScore": { $gte: 75 } });
+
+      if (riskConditions.length > 0) {
+        dbQuery.$or = dbQuery.$or ? [...dbQuery.$or, ...riskConditions] : riskConditions;
+      }
+    }
+
+    
+    const results = await Transactions.find(dbQuery).sort({ createdAt: -1 }).limit(100);
+
+    return res.status(200).json({ success: true, count: results.length, data: results });
+
+  } catch (error) {
+    console.error("Search Error:", error);
+    return res.status(500).json({ error: "Failed to execute advanced search." });
+  }
+});
+
 app.post('/api/v1/fraud/manual-entry', async (req, res) => {
   try {
     const { userId, merchant, amount, description } = req.body;
