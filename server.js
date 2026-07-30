@@ -179,6 +179,64 @@ app.post('/api/v1/fraud/database-sweep', async (req, res) => {
     return res.status(500).json({ error: "Failed to complete database sweep." });
   }
 });
+app.post('/api/v1/fraud/manual-entry', async (req, res) => {
+  try {
+    const { userId, merchant, amount, description } = req.body;
+
+    if (!merchant || !amount) {
+      return res.status(400).json({ success: false, error: "Merchant and Amount are required." });
+    }
+
+    const transactionID = `TXN_${Math.floor(100000 + Math.random() * 900000)}`;
+
+    
+    const prompt = `You are a specialized Financial Fraud & Risk Detection AI. 
+
+Analyze this transaction for financial anomaly patterns:
+- User ID: ${userId || 'USR_MANUAL'}
+- Merchant: ${merchant}
+- Amount: $${amount}
+- Description: ${description || 'None provided'}
+
+FINANCIAL FRAUD HEURISTICS TO ENFORCE:
+1. CARD TESTING: Micro-transactions (amounts between $0.01 and $3.00) at online merchants, micro-pay services, or digital checkouts are classic automated card-validation attempts. Set riskScore to 75-90 and patternFlag to 'Velocity Spike'.
+2. HIGH-RISK VENDORS: Transactions over $3,000 to crypto exchanges, offshore entities, or vague B2B LLCs require scrutiny. Set riskScore to 75-95 and patternFlag to 'Location Mismatch' or 'IP Anomaly'.
+3. LEGITIMATE RETAIL: Standard everyday purchases (groceries, gas, coffee, mainstream subscriptions) with reasonable amounts are safe. Set riskScore to 0-25 and patternFlag to 'None'.
+
+OUTPUT FORMAT: Return ONLY valid JSON:
+{
+  "riskScore": <number 0-100>,
+  "isMalicious": <boolean>,
+  "patternFlag": "<Velocity Spike | Location Mismatch | IP Anomaly | None>",
+  "justification": "<brief financial risk rationale>"
+}`;
+
+    const aiResult = await securityModel.generateContent(prompt);
+    const cleanJson = aiResult.response.text().trim().replace(/^```json\s*|```$/g, '');
+    const assessment = JSON.parse(cleanJson);
+
+    const status = (assessment.riskScore >= 60 || assessment.isMalicious) ? 'FLAGGED' : 'APPROVED';
+
+    const newRecord = await Transactions.create({
+      transactionID,
+      userId: userId || 'USR_MANUAL',
+      merchant,
+      amount: Number(amount),
+      description: description || 'Manual Entry Audit',
+      status,
+      aiRiskAssessment: assessment
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Transaction audited with financial fraud model!",
+      data: newRecord
+    });
+  } catch (error) {
+    console.error("Manual entry processing error:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 app.listen(3000, () => {
   console.log('Server is running on Port 3000.');

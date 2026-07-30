@@ -3,6 +3,30 @@ import axios from 'axios';
 
 export default function DataIngestion({ timestamp }) {
 
+  //--- Manual Entry Modal States ---
+const [showModal, setShowModal] = useState(false);
+const [loading, setLoading] = useState(false);
+const [formData, setFormData] = useState({ userId: '', merchant: '', amount: '', description: '' });
+const [auditResult, setAuditResult] = useState(null);
+
+const handleManualSubmit = async (e) => {
+  e.preventDefault();
+  setLoading(true);
+  setAuditResult(null);
+
+  try {
+    const res = await axios.post('http://localhost:3000/api/v1/fraud/manual-entry', formData);
+    if (res.data.success) {
+      setAuditResult(res.data.data);
+      setFormData({ userId: '', merchant: '', amount: '', description: '' });
+    }
+  } catch (err) {
+    alert("Failed to audit manual entry: " + (err.response?.data?.error || err.message));
+  } finally {
+    setLoading(false);
+  }
+};
+
   const [targetPayload, setTargetPayload] = useState(null);
   const [loadedFileName, setLoadedFileName] = useState('');
   const [scanning, setScanning] = useState(false);
@@ -78,7 +102,7 @@ export default function DataIngestion({ timestamp }) {
           <h2 style={{ fontSize: '24px', fontWeight: '700', margin: '0 0 4px 0', color: '#0f172a' }}>Data Ingestion Center</h2>
           <div style={{ color: 'var(--text-muted)', fontSize: '13px', fontWeight: '500' }}>{timestamp}</div>
         </div>
-        <button onClick
+        <button onClick={() => setShowModal(true)}
         style={{ backgroundColor: '#2563eb', color: '#ffffff', padding: '10px 18px', border: 'none', borderRadius: '8px', fontWeight: '600', fontSize: '14px', cursor: 'pointer' }}>
           ➕ Manual Entry
         </button>
@@ -133,6 +157,89 @@ export default function DataIngestion({ timestamp }) {
       </div>
 
       
+{/*--- MANUAL ENTRY MODAL --- */}
+      {showModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div style={{ backgroundColor: '#fff', padding: '28px', borderRadius: '12px', width: '450px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)' }}>
+            
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
+              <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '700', color: '#0f172a' }}>⚡ Real-Time Manual Transaction Audit</h3>
+              <button onClick={() => { setShowModal(false); setAuditResult(null); }} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '16px', color: '#64748b' }}>✕</button>
+            </div>
+
+            {!auditResult ? (
+              <form onSubmit={handleManualSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', marginBottom: '4px', color: '#334155' }}>User ID</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. USR_9921" 
+                    value={formData.userId}
+                    onChange={(e) => setFormData({...formData, userId: e.target.value})}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }} 
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', marginBottom: '4px', color: '#334155' }}>Merchant Name *</label>
+                  <input 
+                    type="text" 
+                    required
+                    placeholder="e.g. Foreign Crypto Exchange LLC" 
+                    value={formData.merchant}
+                    onChange={(e) => setFormData({...formData, merchant: e.target.value})}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }} 
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', marginBottom: '4px', color: '#334155' }}>Amount ($) *</label>
+                  <input 
+                    type="number" 
+                    step="0.01"
+                    required
+                    placeholder="e.g. 4999.99" 
+                    value={formData.amount}
+                    onChange={(e) => setFormData({...formData, amount: e.target.value})}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', boxSizing: 'border-box' }} 
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '12px', fontWeight: '700', marginBottom: '4px', color: '#334155' }}>Description / Context</label>
+                  <textarea 
+                    placeholder="e.g. Transfer from non-standard IP subnet" 
+                    value={formData.description}
+                    onChange={(e) => setFormData({...formData, description: e.target.value})}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px', height: '60px', boxSizing: 'border-box' }} 
+                  />
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+                  <button type="button" onClick={() => setShowModal(false)} style={{ flex: 1, padding: '10px', border: '1px solid #cbd5e1', borderRadius: '6px', background: '#fff', cursor: 'pointer', fontWeight: '600', color: '#475569' }}>Cancel</button>
+                  <button type="submit" disabled={loading} style={{ flex: 1, padding: '10px', border: 'none', borderRadius: '6px', background: '#2563eb', color: '#fff', cursor: 'pointer', fontWeight: '600' }}>
+                    {loading ? "AI Auditing..." : "Audit Transaction"}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div style={{ backgroundColor: auditResult.status === 'FLAGGED' ? '#fef2f2' : '#f0fdf4', padding: '16px', borderRadius: '8px', border: `1px solid ${auditResult.status === 'FLAGGED' ? '#fca5a5' : '#86efac'}` }}>
+                <h4 style={{ margin: '0 0 8px 0', color: auditResult.status === 'FLAGGED' ? '#991b1b' : '#166534', display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Status: {auditResult.status}</span>
+                  <span>Score: {auditResult.aiRiskAssessment?.riskScore}/100</span>
+                </h4>
+                <p style={{ fontSize: '13px', color: '#334155', margin: '0 0 8px 0' }}><strong>Category Flag:</strong> {auditResult.aiRiskAssessment?.patternFlag}</p>
+                <p style={{ fontSize: '12px', color: '#475569', margin: 0 }}><strong>AI Reasoning:</strong> {auditResult.aiRiskAssessment?.justification}</p>
+
+                <button onClick={() => setAuditResult(null)} style={{ marginTop: '16px', width: '100%', padding: '8px', backgroundColor: '#0f172a', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}>
+                  + Add Another Entry
+                </button>
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
 
       
       {scanResult && (
