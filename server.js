@@ -20,8 +20,7 @@ app.use(mongoSanitize());
 
 app.post('/api/v1/fraud/validate', async (req, res) => {
   try {
-    const { transactionId, userId, amount, merchant, description } = req.body;
-    console.log(`Analyzing transaction: ${transactionId}`);
+    const finalTxID = transactionID || transactionId || `TXN_${Math.floor(100000 + Math.random() * 900000)}`;
 
     const prompt = `You are an expert financial fraud detection AI. Analyze the provided transaction data. 
 
@@ -60,7 +59,7 @@ app.post('/api/v1/fraud/validate', async (req, res) => {
     }
     
     const savedTransaction = await Transactions.create({
-      transactionID: transactionId,
+      transactionID: finalTxID,
       userId: userId,
       amount: amount,
       merchant: merchant,
@@ -69,6 +68,7 @@ app.post('/api/v1/fraud/validate', async (req, res) => {
       aiRiskAssessment: {
         riskScore: Number(aiAnalysis.riskScore) || 0,
         isMalicious: Boolean(aiAnalysis.isMalicious), 
+        patternFlag: aiAnalysis.patternFlag || "None",
         justification: aiAnalysis.justification || "No justification provided."
       }
     });
@@ -177,6 +177,37 @@ app.post('/api/v1/fraud/database-sweep', async (req, res) => {
   } catch (error) {
     console.error("Sweep error:", error);
     return res.status(500).json({ error: "Failed to complete database sweep." });
+  }
+});
+app.put('/api/v1/fraud/override/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, riskScore, comment } = req.body;
+
+    const updatedTx = await Transactions.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          status: status,
+          "aiRiskAssessment.riskScore": riskScore,
+          "aiRiskAssessment.isMalicious": status === 'FLAGGED',
+          
+          "aiRiskAssessment.justification": comment 
+            ? `[HUMAN OVERRIDE] ${comment}` 
+            : "[HUMAN OVERRIDE] Manually marked as safe by auditor."
+        }
+      },
+      { new: true } 
+    );
+
+    if (!updatedTx) {
+      return res.status(404).json({ error: "Transaction not found." });
+    }
+
+    return res.status(200).json({ success: true, data: updatedTx });
+  } catch (error) {
+    console.error("Override error:", error);
+    return res.status(500).json({ error: "Failed to process manual override." });
   }
 });
 app.get('/api/v1/audit/metrics', async (req, res) => {
