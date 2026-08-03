@@ -5,13 +5,91 @@ import axios from 'axios';
 
 export default function Dashboard({ timestamp }) {
 
-
+  const [isSweeping, setIsSweeping] = useState(false);
+  const [sweepMessage, setSweepMessage] = useState(null);
 
   const [records, setRecords] = useState([]);
   
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRecord, setSelectedRecord] = useState(null);
   
+  const [overrideComment, setOverrideComment] = useState('');
+  const [overrideRisk, setOverrideRisk] = useState(0);
+  const [isOverriding, setIsOverriding] = useState(false);
+
+  
+  const handleManualOverride = async () => {
+    if (!selectedRecord) return;
+    setIsOverriding(true);
+    
+    try {
+      const res = await axios.put(`http://localhost:3000/api/v1/fraud/override/${selectedRecord._id}`, {
+        status: 'APPROVED',
+        riskScore: overrideRisk,
+        comment: overrideComment
+      });
+      
+      if (res.data.success) {
+        
+        setRecords(records.map(r => r._id === selectedRecord._id ? res.data.data : r));
+        
+        
+        setSelectedRecord(res.data.data);
+        
+        
+        setOverrideComment('');
+        setOverrideRisk(0);
+      }
+    } catch (err) {
+      console.error("Override failed", err);
+      alert("Failed to override the transaction.");
+    } finally {
+      setIsOverriding(false);
+    }
+  };
+
+
+
+
+
+
+
+
+  const triggerDatabaseSweep = async () => {
+    setIsSweeping(true);
+    setSweepMessage(null);
+    
+    try {
+      const response = await axios.post('http://localhost:3000/api/v1/fraud/database-sweep');
+      
+      
+      if (response.data.message) {
+        setSweepMessage(response.data.message);
+      }
+      
+      
+
+    } catch (error) {
+      console.error("Sweep Failed:", error);
+      setSweepMessage("❌ Error: Failed to communicate with the sweep engine.");
+    } finally {
+      setIsSweeping(false);
+    }
+  };
+
+  useEffect(() => {
+    const fetchSystemData = async () => {
+      try {
+        const res = await axios.get('http://localhost:3000/api/v1/fraud/history');
+        if (res.data.success) setRecords(res.data.data);
+      } catch (err) {
+        console.error("Database tracking read failure", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSystemData();
+  }, []);
   
   const totalTransactionsCount = records.length;
   const flaggedRecords = records.filter(r => r.status === 'FLAGGED' || r.aiRiskAssessment?.isMalicious);
@@ -40,6 +118,46 @@ export default function Dashboard({ timestamp }) {
         </button>
       </div>
 
+{/*--- ENTERPRISE SWEEP PANEL --- */}
+<div style={{ backgroundColor: '#0f172a', padding: '24px', borderRadius: '12px', border: '1px solid #334155', marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+  <div>
+    <h3 style={{ margin: '0 0 8px 0', fontSize: '18px', fontWeight: '700', color: '#ffffff' }}>
+      Enterprise Database Sweep
+    </h3>
+    <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>
+      Scan all pending or historically unaudited database records through the Gemini security matrix.
+    </p>
+    
+    {/* Dynamic Result Message */}
+    {sweepMessage && (
+      <div style={{ marginTop: '12px', fontSize: '13px', color: sweepMessage.includes('❌') ? '#ef4444' : '#10b981', fontWeight: '600' }}>
+        {sweepMessage.includes('❌') ? sweepMessage : `✓ ${sweepMessage}`}
+      </div>
+    )}
+  </div>
+
+  <button
+    onClick={triggerDatabaseSweep}
+    disabled={isSweeping}
+    style={{
+      backgroundColor: isSweeping ? '#475569' : '#8b5cf6', 
+      color: '#ffffff',
+      padding: '12px 24px',
+      border: 'none',
+      borderRadius: '8px',
+      fontWeight: '700',
+      fontSize: '14px',
+      cursor: isSweeping ? 'not-allowed' : 'pointer',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      transition: '0.2s',
+      boxShadow: isSweeping ? 'none' : '0 4px 14px rgba(139, 92, 246, 0.4)'
+    }}
+  >
+    {isSweeping ? '🔄 AI Scanning Database...' : '🔍 Run System Sweep'}
+  </button>
+</div>
 
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px', marginBottom: '24px' }}>
@@ -296,6 +414,50 @@ export default function Dashboard({ timestamp }) {
 
             </div>
 
+            {/*--- HUMAN OVERRIDE PANEL --- */}
+              {selectedRecord.status === 'FLAGGED' && (
+                <div style={{ marginTop: '16px', padding: '16px', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #cbd5e1' }}>
+                  <h4 style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#0f172a' }}>🛠️ Manual Auditor Override</h4>
+                  
+                  <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
+                    <div style={{ flexGrow: 1 }}>
+                      <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '4px' }}>Override Justification (Optional)</label>
+                      <input 
+                        type="text" 
+                        placeholder="e.g., Verified identity via phone call." 
+                        value={overrideComment}
+                        onChange={(e) => setOverrideComment(e.target.value)}
+                        style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}
+                      />
+                    </div>
+                    <div style={{ width: '120px' }}>
+                      <label style={{ display: 'block', fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', marginBottom: '4px' }}>Set Risk (0-100)</label>
+                      <input 
+                        type="number" 
+                        min="0" 
+                        max="100" 
+                        value={overrideRisk}
+                        onChange={(e) => setOverrideRisk(Number(e.target.value))}
+                        style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '13px' }}
+                      />
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={handleManualOverride}
+                    disabled={isOverriding}
+                    style={{ 
+                      width: '100%', padding: '10px', backgroundColor: '#10b981', color: 'white', 
+                      border: 'none', borderRadius: '6px', fontWeight: '600', fontSize: '13px',
+                      cursor: isOverriding ? 'not-allowed' : 'pointer', transition: '0.2s',
+                      opacity: isOverriding ? 0.7 : 1
+                    }}
+                  >
+                    {isOverriding ? 'Updating Matrix...' : '✓ Approve & Mark as Safe'}
+                  </button>
+                </div>
+              )}
+              {/*------------------------------- */}
 
 
             <div style={{ padding: '14px 24px', backgroundColor: '#f8fafc', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end' }}>
