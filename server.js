@@ -7,11 +7,13 @@ const Transactions=require('./models/Transactions');
 const {securityModel}=require('./gemini');
 
 const mongoose=require('mongoose');
+const SandboxLog = require('./models/SandboxLog');
 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('Connected to MongoDB successfully!'))
   .catch((err) => console.error('MongoDB connection error:', err));
 
+const cors = require('cors');
 
 let app = express();
 
@@ -20,7 +22,9 @@ app.use(mongoSanitize());
 
 app.post('/api/v1/fraud/validate', async (req, res) => {
   try {
+    const { transactionID, transactionId, userId, amount, merchant, description } = req.body;
     const finalTxID = transactionID || transactionId || `TXN_${Math.floor(100000 + Math.random() * 900000)}`;
+    console.log(`Analyzing transaction: ${finalTxID}`);
 
     const prompt = `You are an expert financial fraud detection AI. Analyze the provided transaction data. 
 
@@ -84,6 +88,14 @@ app.post('/api/v1/fraud/validate', async (req, res) => {
       error: "Server encountered an error during simulation",
       details: error.message
     });
+  }
+});
+app.get('/api/v1/fraud/history', async (req, res) => {
+  try {
+    const history = await Transactions.find().sort({ createdAt: -1 });
+    return res.status(200).json({ success: true, data: history });
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to fetch transaction logs" });
   }
 });
 app.post('/api/v1/fraud/database-sweep', async (req, res) => {
@@ -409,6 +421,46 @@ app.post('/api/v1/security/injection', async (req, res) => {
       justification: aiAnalysis.justification
     });
 
+    return res.status(200).json({
+      success: true,
+      data: {
+        id: newLog._id,
+        time: newLog.createdAt.toLocaleTimeString('en-US', { hour12: false }),
+        scenario: newLog.scenario,
+        status: newLog.status,
+        score: newLog.aiScore,
+        result: newLog.resultStatus,
+        justification: newLog.justification
+      }
+    });
+
+  } catch (error) {
+    console.error("Injection endpoint error:", error);
+    return res.status(500).json({ error: "Failed to evaluate sandbox payload." });
+  }
+});
+
+
+app.get('/api/v1/security/results', async (req, res) => {
+  try {
+    const logs = await SandboxLog.find().sort({ createdAt: -1 }).limit(15);
+    
+    const formattedLogs = logs.map(log => ({
+      id: log._id,
+      time: new Date(log.createdAt).toLocaleTimeString('en-US', { hour12: false }),
+      scenario: log.scenario,
+      status: log.status,
+      score: log.aiScore,
+      result: log.resultStatus,
+      justification: log.justification
+    }));
+
+    return res.status(200).json({ success: true, data: formattedLogs });
+  } catch (error) {
+    console.error("Fetch results error:", error);
+    return res.status(500).json({ error: "Failed to retrieve security test results." });
+  }
+});
 app.listen(3000, () => {
   console.log('Server is running on Port 3000.');
 
