@@ -461,6 +461,27 @@ app.get('/api/v1/security/results', async (req, res) => {
     return res.status(500).json({ error: "Failed to retrieve security test results." });
   }
 });
+app.get('/api/v1/security/export-report', async (req, res) => {
+  try {
+    const logs = await SandboxLog.find().sort({ createdAt: -1 }).limit(100);
+
+    let csvContent = 'ID,Timestamp,Scenario,Endpoint,Status,AI Score,Result,Justification\n';
+
+    logs.forEach(log => {
+      const time = new Date(log.createdAt).toISOString();
+      const safeJustification = `"${(log.justification || '').replace(/"/g, '""')}"`;
+      csvContent += `${log._id},${time},${log.scenario},${log.endpoint},${log.status},${log.aiScore},${log.resultStatus},${safeJustification}\n`;
+    });
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="Sandbox_Security_Audit_Report.csv"');
+    return res.status(200).send(csvContent);
+
+  } catch (error) {
+    console.error("Report export error:", error);
+    return res.status(500).json({ error: "Failed to generate CSV report." });
+  }
+});
 app.listen(3000, () => {
   console.log('Server is running on Port 3000.');
 
