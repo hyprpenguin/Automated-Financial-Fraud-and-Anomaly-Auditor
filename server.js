@@ -482,6 +482,25 @@ app.get('/api/v1/security/export-report', async (req, res) => {
     return res.status(500).json({ error: "Failed to generate CSV report." });
   }
 });
+app.get('/api/v1/system/health', async (req, res) => {
+  try {
+    
+    if (securityModel) {
+      return res.status(200).json({ 
+        geminiGuardrail: 'Online',
+        blackDuck: 'Engaged' 
+      });
+    } else {
+      throw new Error("Security model is not initialized.");
+    }
+  } catch (error) {
+    console.error("Health Check Error:", error);
+    return res.status(500).json({ 
+      geminiGuardrail: 'Offline',
+      blackDuck: 'Offline' 
+    });
+  }
+});
 app.listen(3000, () => {
   console.log('Server is running on Port 3000.');
 
