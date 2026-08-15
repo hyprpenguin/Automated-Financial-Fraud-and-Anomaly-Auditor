@@ -9,6 +9,7 @@ const {securityModel}=require('./gemini');
 const mongoose=require('mongoose');
 const SandboxLog = require('./models/SandboxLog');
 
+const Target = require('./models/Target'); 
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('Connected to MongoDB successfully!'))
   .catch((err) => console.error('MongoDB connection error:', err));
@@ -501,6 +502,41 @@ app.get('/api/v1/system/health', async (req, res) => {
     });
   }
 });
+app.get('/api/v1/sandbox/targets', async (req, res) => {
+  try {
+    let targets = await Target.find().sort({ createdAt: -1 });
+
+    if (targets.length === 0) {
+      targets = await Target.insertMany([
+        { type: 'Transaction', endpointUrl: '/api/v1/fraud/validate', parameters: 'tx_id, amount' },
+        { type: 'Sandbox', endpointUrl: '/api/v1/security/injection', parameters: 'payload' }
+      ]);
+    }
+
+    res.status(200).json(targets);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch targets' });
+  }
+});
+
+
+app.post('/api/v1/sandbox/targets', async (req, res) => {
+  try {
+    const { type, endpointUrl, parameters } = req.body;
+    
+    if (!type || !endpointUrl || !parameters) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const newTarget = new Target({ type, endpointUrl, parameters });
+    await newTarget.save();
+    
+    res.status(201).json(newTarget);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create target endpoint' });
+  }
+});
+
 app.listen(3000, () => {
   console.log('Server is running on Port 3000.');
 
