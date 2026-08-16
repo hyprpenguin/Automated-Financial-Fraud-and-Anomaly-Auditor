@@ -8,6 +8,9 @@ const {securityModel}=require('./gemini');
 
 const mongoose=require('mongoose');
 const SandboxLog = require('./models/SandboxLog');
+const { getDynamicSecurityModel } = require('./gemini');
+
+const AiConfig = require('./models/AiConfig');
 
 const Target = require('./models/Target'); 
 mongoose.connect(process.env.MONGO_URI)
@@ -18,6 +21,7 @@ const cors = require('cors');
 
 let app = express();
 
+app.use(cors());
 app.use(express.json());
 app.use(mongoSanitize());
 
@@ -26,6 +30,9 @@ app.post('/api/v1/fraud/validate', async (req, res) => {
     const { transactionID, transactionId, userId, amount, merchant, description } = req.body;
     const finalTxID = transactionID || transactionId || `TXN_${Math.floor(100000 + Math.random() * 900000)}`;
     console.log(`Analyzing transaction: ${finalTxID}`);
+    let activeConfig = await AiConfig.findOne({ configKey: 'primary_sentinel_config' });
+
+    const dynamicSecurityModel = getDynamicSecurityModel(activeConfig || {});
 
     const prompt = `You are an expert financial fraud detection AI. Analyze the provided transaction data. 
 
@@ -51,7 +58,7 @@ app.post('/api/v1/fraud/validate', async (req, res) => {
     Description: ${description}`
     
 
-    const result = await securityModel.generateContent(prompt); 
+    const result = await dynamicSecurityModel.generateContent(prompt);
     const aiRawResponse = result.response.text().trim();
     console.log("Raw Gemini Output:", aiRawResponse);
 
@@ -103,7 +110,10 @@ app.post('/api/v1/fraud/database-sweep', async (req, res) => {
   try {
     console.log("Initiating Deep Database Sweep...");
 
-    const pendingTransactions = await Transactions.find({ status: 'PENDING' }).limit(10);
+    const activeConfig = await AiConfig.findOne({ configKey: 'primary_sentinel_config' });
+    const dynamicSecurityModel = getDynamicSecurityModel(activeConfig || {});
+    const batchLimit = activeConfig?.performance?.batchSize || 10;
+    const pendingTransactions = await Transactions.find({ status: 'PENDING' }).limit(batchLimit);
 
     if (pendingTransactions.length === 0) {
       return res.status(200).json({ message: "Database is clean. No pending transactions found.", auditedCount: 0 });
@@ -142,7 +152,7 @@ app.post('/api/v1/fraud/database-sweep', async (req, res) => {
       Description: ${tx.description}`;
 
       
-      const result = await securityModel.generateContent(prompt);
+      const result = await dynamicSecurityModel.generateContent(prompt);
       const aiRawResponse = result.response.text().trim();
       
       let aiAnalysis = { riskScore: 90, status: "FLAGGED", justification: "Failed to parse AI response" };
@@ -320,6 +330,8 @@ app.post('/api/v1/fraud/manual-entry', async (req, res) => {
     if (!merchant || !amount) {
       return res.status(400).json({ success: false, error: "Merchant and Amount are required." });
     }
+    const activeConfig = await AiConfig.findOne({ configKey: 'primary_sentinel_config' });
+    const dynamicSecurityModel = getDynamicSecurityModel(activeConfig || {});
 
     const transactionID = `TXN_${Math.floor(100000 + Math.random() * 900000)}`;
 
@@ -345,7 +357,7 @@ OUTPUT FORMAT: Return ONLY valid JSON:
   "justification": "<brief financial risk rationale>"
 }`;
 
-    const aiResult = await securityModel.generateContent(prompt);
+    const aiResult = await dynamicSecurityModel.generateContent(prompt);
     const cleanJson = aiResult.response.text().trim().replace(/^```json\s*|```$/g, '');
     const assessment = JSON.parse(cleanJson);
 
@@ -395,7 +407,9 @@ app.post('/api/v1/security/injection', async (req, res) => {
 
     Payload to analyze: "${payload}"`;
 
-    const result = await securityModel.generateContent(prompt);
+    const activeConfig = await AiConfig.findOne({ configKey: 'primary_sentinel_config' });
+    const dynamicSecurityModel = getDynamicSecurityModel(activeConfig || {});
+    const result = await dynamicSecurityModel.generateContent(prompt);
     const aiRawResponse = result.response.text().trim();
     
     let aiAnalysis = { riskScore: 99, isMalicious: true, justification: "Failed to parse AI response" };
@@ -536,6 +550,59 @@ app.post('/api/v1/sandbox/targets', async (req, res) => {
     res.status(500).json({ error: 'Failed to create target endpoint' });
   }
 });
+app.get('/api/v1/config/ai', async (req, res) => {
+  try {
+    let config = await AiConfig.findOne({ configKey: 'primary_sentinel_config' });
+    if (!config) {
+      config = await AiConfig.create({ configKey: 'primary_sentinel_config' });
+    }
+    return res.status(200).json({ success: true, data: config });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+app.put('/api/v1/config/ai', async (req, res) => {
+  try {
+    const updatedConfig = await AiConfig.findOneAndUpdate(
+      { configKey: 'primary_sentinel_config' },
+      { $set: req.body },
+      { new: true, upsert: true }
+    );
+    return res.status(200).json({ 
+      success: true, 
+      message: "Configurations successfully updated!", 
+      data: updatedConfig 
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+app.post('/api/v1/config/test-prompt', async (req, res) => {
+  try {
+    const { systemPrompt, temperature, maxTokens, modelType } = req.body;
+    
+    const dynamicModel = getDynamicSecurityModel({
+      modelType,
+      temperature: Number(temperature),
+      maxTokens: Number(maxTokens),
+      systemPrompt
+    });
+
+    const testPayload = `Amount: $1.20, Merchant: 'Unknown Micro Pay', Description: 'Card Verification test'`;
+    const result = await dynamicModel.generateContent(`Analyze this sample transaction: ${testPayload}`);
+    const output = result.response.text();
+
+    return res.status(200).json({
+      success: true,
+      sampleUser: 'USR-99218',
+      rawOutput: output,
+      schemaValid: true
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 
 app.listen(3000, () => {
   console.log('Server is running on Port 3000.');
