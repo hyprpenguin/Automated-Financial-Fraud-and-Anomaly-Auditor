@@ -11,6 +11,8 @@ const SandboxLog = require('./models/SandboxLog');
 const { getDynamicSecurityModel } = require('./gemini');
 
 const AiConfig = require('./models/AiConfig');
+const User = require('./models/User');
+const crypto = require('crypto'); 
 
 const Target = require('./models/Target'); 
 mongoose.connect(process.env.MONGO_URI)
@@ -24,6 +26,27 @@ let app = express();
 app.use(cors());
 app.use(express.json());
 app.use(mongoSanitize());
+const bcrypt = require('bcrypt');
+
+
+
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; 
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access denied. No authentication token provided.' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token.' });
+    }
+    req.user = decodedUser; 
+    next();
+  });
+};
+
 
 app.post('/api/v1/fraud/validate', async (req, res) => {
   try {
@@ -602,6 +625,113 @@ app.post('/api/v1/config/test-prompt', async (req, res) => {
     return res.status(500).json({ success: false, error: error.message });
   }
 });
+const seedSuperAdmin = async () => {
+  try {
+    const adminExists = await User.findOne({ role: 'SuperAdmin' });
+    
+    if (!adminExists) {
+      const defaultPassword = 'SuperAdmin123!'; // You will change this later!
+      const hashedPassword = await bcrypt.hash(defaultPassword, 10);
+      
+      await User.create({
+        email: 'admin@sentinel.com',
+        password: hashedPassword,
+        role: 'SuperAdmin'
+      });
+      console.log('🌱 Default Super Admin created: admin@sentinel.com / SuperAdmin123!');
+    }
+  } catch (err) {
+    console.error('Failed to seed Super Admin:', err);
+  }
+};
+
+seedSuperAdmin();
+const jwt = require('jsonwebtoken');
+
+
+const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_auditor_key_123'; 
+
+
+
+app.post('/api/v1/auth/create-user', authenticateToken, async (req, res) => {
+  try {
+    
+    if (req.user.role !== 'SuperAdmin') {
+      return res.status(403).json({ error: 'Forbidden. Only Super Admins can create accounts.' });
+    }
+
+    const { name, email, tempPassword, role } = req.body;
+
+    
+    const validRoles = ['Auditor', 'Analyst'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ error: 'Invalid role. Must be Auditor or Analyst.' });
+    }
+
+    
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ error: 'User email already exists in the system.' });
+    }
+
+    
+    const hashedPassword = await bcrypt.hash(tempPassword, 10);
+
+    
+    const newUser = new User({ 
+      name,
+      email, 
+      password: hashedPassword, 
+      role 
+    });
+    
+    await newUser.save();
+
+    res.status(201).json({ 
+      success: true, 
+      message: `${role} account created successfully for ${email}.` 
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create user.' });
+  }
+});
+
+app.post('/api/v1/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials.' });
+    }
+
+    if (user.status === 'Inactive') {
+      return res.status(403).json({ 
+        error: 'Account disabled. Please contact your administrator.' 
+      });
+    }
+
+    
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Invalid credentials.' });
+    }
+
+    
+    const token = jwt.sign(
+      { userId: user._id, email: user.email, role: user.role }, 
+      JWT_SECRET, 
+      { expiresIn: '8h' } 
+    );
+
+    res.status(200).json({ success: true, token });
+  } catch (error) {
+    res.status(500).json({ error: 'Login failed.' });
+  }
+});
+
 
 
 app.listen(3000, () => {
