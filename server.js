@@ -732,9 +732,58 @@ app.post('/api/v1/auth/login', async (req, res) => {
   }
 });
 
+app.get('/api/v1/users/me', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('-password');
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
 
+app.put('/api/v1/users/me', authenticateToken, async (req, res) => {
+  try {
+    const { name, phone, password } = req.body;
+    const updateData = { name, phone };
+    if (password && password.trim() !== '') updateData.password = await bcrypt.hash(password, 10);
+    const updatedUser = await User.findByIdAndUpdate(req.user.userId, updateData, { new: true }).select('-password');
+    res.json(updatedUser);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update profile.' });
+  }
+});
 
-app.listen(3000, () => {
+app.get('/api/v1/users', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'SuperAdmin') return res.status(403).json({ error: 'Forbidden.' });
+    const team = await User.find().select('-password');
+    res.json(team);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch team members' });
+  }
+});
+
+app.put('/api/v1/users/:id', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'SuperAdmin') return res.status(403).json({ error: 'Forbidden.' });
+    const { name, role, status } = req.body;
+    const updatedUser = await User.findByIdAndUpdate(req.params.id, { name, role, status }, { new: true }).select('-password');
+    res.json(updatedUser);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update user.' });
+  }
+});
+
+app.delete('/api/v1/users/:id', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'SuperAdmin') return res.status(403).json({ error: 'Forbidden.' });
+    if (req.params.id === req.user.userId) return res.status(400).json({ error: 'Cannot delete own account.' });
+    await User.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'User deleted.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete user.' });
+  }
+});
   console.log('Server is running on Port 3000.');
 
 });
