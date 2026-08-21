@@ -15,6 +15,9 @@ const User = require('./models/User');
 const crypto = require('crypto'); 
 
 const Target = require('./models/Target'); 
+const { executeSecurityAnalysis } = require('./aiService');
+const { getDynamicSecurityModel } = require('./gemini');
+const { GoogleGenAI } = require('@google/genai');
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('Connected to MongoDB successfully!'))
   .catch((err) => console.error('MongoDB connection error:', err));
@@ -80,10 +83,7 @@ app.post('/api/v1/fraud/validate', async (req, res) => {
     Merchant: ${merchant}
     Description: ${description}`
     
-
-    const result = await dynamicSecurityModel.generateContent(prompt);
-    const aiRawResponse = result.response.text().trim();
-    console.log("Raw Gemini Output:", aiRawResponse);
+    const aiRawResponse = (await executeSecurityAnalysis(prompt, activeConfig)).trim();
 
     let aiAnalysis = { riskScore: 90, status: "FLAGGED" }; 
     try {
@@ -174,9 +174,7 @@ app.post('/api/v1/fraud/database-sweep', async (req, res) => {
       Merchant: ${tx.merchant}
       Description: ${tx.description}`;
 
-      
-      const result = await dynamicSecurityModel.generateContent(prompt);
-      const aiRawResponse = result.response.text().trim();
+      const aiRawResponse = (await executeSecurityAnalysis(prompt, activeConfig)).trim();
       
       let aiAnalysis = { riskScore: 90, status: "FLAGGED", justification: "Failed to parse AI response" };
       try {
@@ -380,9 +378,8 @@ OUTPUT FORMAT: Return ONLY valid JSON:
   "justification": "<brief financial risk rationale>"
 }`;
 
-    const aiResult = await dynamicSecurityModel.generateContent(prompt);
-    const cleanJson = aiResult.response.text().trim().replace(/^```json\s*|```$/g, '');
-    const assessment = JSON.parse(cleanJson);
+    const rawResponse = await executeSecurityAnalysis(prompt, activeConfig);
+    const assessment = JSON.parse(rawResponse.trim().replace(/^```json\s*|```$/g, ''));
 
     const status = (assessment.riskScore >= 60 || assessment.isMalicious) ? 'FLAGGED' : 'APPROVED';
 
@@ -455,20 +452,12 @@ app.post('/api/v1/security/injection', async (req, res) => {
       payload: payload,
       status: 'Fired',
       aiScore: (aiAnalysis.riskScore / 10).toFixed(1), 
-      resultStatus: resultColorStatus,
-      justification: aiAnalysis.justification
+      resultStatus: aiAnalysis.riskScore >= 75 ? 'Blocked (Red)' : (aiAnalysis.riskScore >= 50 ? 'Flagged' : 'Succeeded'),
+      justification: aiAnalysis.justification, modelUsed: activeConfig?.modelType || 'gemini-3.1-flash-lite' 
     });
 
     return res.status(200).json({
-      success: true,
-      data: {
-        id: newLog._id,
-        time: newLog.createdAt.toLocaleTimeString('en-US', { hour12: false }),
-        scenario: newLog.scenario,
-        status: newLog.status,
-        score: newLog.aiScore,
-        result: newLog.resultStatus,
-        justification: newLog.justification
+        justification: newLog.justification, model: newLog.modelUsed 
       }
     });
 
@@ -603,24 +592,9 @@ app.put('/api/v1/config/ai', async (req, res) => {
 app.post('/api/v1/config/test-prompt', async (req, res) => {
   try {
     const { systemPrompt, temperature, maxTokens, modelType } = req.body;
-    
-    const dynamicModel = getDynamicSecurityModel({
-      modelType,
-      temperature: Number(temperature),
-      maxTokens: Number(maxTokens),
-      systemPrompt
-    });
-
-    const testPayload = `Amount: $1.20, Merchant: 'Unknown Micro Pay', Description: 'Card Verification test'`;
-    const result = await dynamicModel.generateContent(`Analyze this sample transaction: ${testPayload}`);
-    const output = result.response.text();
-
-    return res.status(200).json({
-      success: true,
-      sampleUser: 'USR-99218',
-      rawOutput: output,
-      schemaValid: true
-    });
+    const rawResponse = await executeSecurityAnalysis(fullPrompt, { modelType, temperature, maxTokens });
+    const resultJson = JSON.parse(rawResponse.trim().replace(/^```json\s*|```$/g, ''));
+    res.json({ success: true, sampleUser: 'USR-9921', result: resultJson });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }

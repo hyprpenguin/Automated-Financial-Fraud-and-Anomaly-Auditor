@@ -1,4 +1,3 @@
-// models/AiConfig.js
 const mongoose = require('mongoose');
 
 const FraudRuleSchema = new mongoose.Schema({
