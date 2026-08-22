@@ -50,6 +50,110 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE'] } });
+
+io.on('connection', (socket) => {
+  console.log('Frontend connected to Live WebSocket Feed');
+});
+
+const emitLog = (message, type = 'info') => {
+  const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
+  io.emit('ingestion-stream', { timestamp, message, type });
+};
+
+
+
+
+
+
+
+
+
+app.post('/api/v1/ingestion/trigger', authenticateToken, async (req, res) => {
+  const { payload } = req.body;
+  if (!payload || !Array.isArray(payload)) return res.status(400).json({ error: "Invalid payload format." });
+
+  const recordCount = payload.length;
+  res.json({ success: true, message: 'Pipeline started', total: recordCount });
+
+  (async () => {
+    const startTime = Date.now(); 
+    emitLog(`⚪ Ingestion Job initialized for ${recordCount} records...`, 'info');
+    
+    let activeConfig = await AiConfig.findOne({ configKey: 'primary_sentinel_config' });
+    const activeRulesText = (activeConfig?.fraudRules || [])
+      .filter(rule => rule.status === 'Enabled')
+      .map(rule => `- ${rule.ruleType.toUpperCase()} [${rule.severity} Severity]: ${rule.threshold}`)
+      .join('\n');
+
+    for (let i = 0; i < payload.length; i++) {
+      const tx = payload[i];
+      const txID = tx.transactionID || tx.transactionId || `TXN_${Math.floor(100000 + Math.random() * 900000)}`;
+      const amount = tx.amount || 0;
+      const merchant = tx.merchant || 'Unknown Merchant';
+      const userId = tx.userId || 'USR_BATCH';
+      const description = tx.description || 'Batch payload ingestion';
+
+      emitLog(`🔍 [${i + 1}/${recordCount}] Analyzing ${txID} ($${amount} @ ${merchant})...`, 'info');
+
+      try {
+        const prompt = `${activeConfig.systemPrompt}
+        
+        DYNAMIC SPECIFIC RULES:
+        ${activeRulesText || '- No specific dynamic rules enabled. Use standard heuristic analysis.'}
+        
+        Evaluate the transaction and return ONLY a valid JSON object (no markdown, no backticks):
+        {
+          "riskScore": <number 0-100>,
+          "isMalicious": <boolean true if riskScore is over 75>,
+          "patternFlag": "<Velocity Spike | Location Mismatch | IP Anomaly | None>",
+          "justification": "<A brief, clinical explanation of your decision>"
+        }
+
+        Transaction to analyze:
+        Amount: $${amount}
+        Merchant: ${merchant}
+        Description: ${description}`;
+
+        const aiRawResponse = (await executeSecurityAnalysis(prompt, activeConfig)).trim();
+        
+        let aiAnalysis = { riskScore: 80, isMalicious: true, patternFlag: 'None', justification: 'Flagged by security heuristics' };
+        try {
+          const cleanJson = aiRawResponse.replace(/^```json\s*|```$/g, '');
+          aiAnalysis = JSON.parse(cleanJson);
+        } catch (e) {
+          console.warn(`JSON parse error on ${txID}`);
+        }
+
+        const isMalicious = Boolean(aiAnalysis.isMalicious) || Number(aiAnalysis.riskScore) >= 60;
+        const status = isMalicious ? 'FLAGGED' : 'APPROVED';
+
+        await Transactions.create({
+          transactionID: txID, userId, amount: Number(amount), merchant, description, status,
+          aiRiskAssessment: {
+            riskScore: Number(aiAnalysis.riskScore) || 0, isMalicious,
+            patternFlag: aiAnalysis.patternFlag || 'None', justification: aiAnalysis.justification || 'Audited via automated pipeline'
+          }
+        });
+
+        if (status === 'FLAGGED') emitLog(`🚨 FLAGGED [Score: ${aiAnalysis.riskScore}/100] ${txID} | Flag: ${aiAnalysis.patternFlag} | ${aiAnalysis.justification}`, 'error');
+        else emitLog(`🟢 APPROVED [Score: ${aiAnalysis.riskScore}/100] ${txID} | Verified clean`, 'success');
+
+      } catch (err) {
+        emitLog(`⚠️ Error analyzing ${txID}: ${err.message}`, 'warning');
+      }
+    }
+
+    const endTime = Date.now(); 
+    const elapsedSeconds = (endTime - startTime) / 1000;
+    let recPerSec = (recordCount / elapsedSeconds).toFixed(2);
+    if (elapsedSeconds < 0.1) recPerSec = recordCount; 
+
+    emitLog(`✅ Ingestion pipeline complete. All ${recordCount} records audited and saved.`, 'success');
+    io.emit('ingestion-metrics', { speed: recPerSec });
+  })();
+});
 
 app.post('/api/v1/fraud/validate', async (req, res) => {
   try {
@@ -758,6 +862,40 @@ app.delete('/api/v1/users/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to delete user.' });
   }
 });
+app.get('/api/v1/settings/integrations', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'SuperAdmin') return res.status(403).json({ error: 'Forbidden' });
+    let config = await SystemConfig.findOne();
+    if (!config) config = await SystemConfig.create({}); 
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch integrations.' });
+  }
+});
+
+app.post('/api/v1/settings/integrations/apikey', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'SuperAdmin') return res.status(403).json({ error: 'Forbidden' });
+    const newKey = 'Sentinel_SK_' + crypto.randomBytes(12).toString('hex');
+    const config = await SystemConfig.findOneAndUpdate({}, { apiKey: newKey }, { new: true, upsert: true });
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to generate API Key.' });
+  }
+});
+
+app.put('/api/v1/settings/integrations/webhook', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'SuperAdmin') return res.status(403).json({ error: 'Forbidden' });
+    const { webhookUrl } = req.body;
+    const config = await SystemConfig.findOneAndUpdate({}, { webhookUrl }, { new: true, upsert: true });
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update Webhook.' });
+  }
+});
+
+server.listen(3000, () => {
   console.log('Server is running on Port 3000.');
 
 });

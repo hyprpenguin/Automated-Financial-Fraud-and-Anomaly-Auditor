@@ -1,41 +1,68 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { io } from 'socket.io-client';
+
+
+
 
 export default function DataIngestion({ timestamp }) {
+  const [logs, setLogs] = useState([]);
+  const [dbCount, setDbCount] = useState(0); 
+  const [avgSpeed, setAvgSpeed] = useState(0);
 
-  //--- Manual Entry Modal States ---
-const [showModal, setShowModal] = useState(false);
-const [loading, setLoading] = useState(false);
-const [formData, setFormData] = useState({ userId: '', merchant: '', amount: '', description: '' });
-const [auditResult, setAuditResult] = useState(null);
+  
+useEffect(() => {
+    const socket = io('http://localhost:3000');
+    
+    socket.on('ingestion-stream', (newLog) => {
+      setLogs((prevLogs) => [...prevLogs, newLog].slice(-50));
+    });
 
-const handleManualSubmit = async (e) => {
-  e.preventDefault();
-  setLoading(true);
-  setAuditResult(null);
+    
+    socket.on('ingestion-metrics', (data) => {
+      setAvgSpeed(data.speed);
+      setScanning(false); 
+      
+      
+      axios.get('http://localhost:3000/api/v1/fraud/history')
+        .then(res => { if (res.data.success) setDbCount(res.data.data.length); })
+        .catch(err => console.error(err));
+    });
 
-  try {
-    const res = await axios.post('http://localhost:3000/api/v1/fraud/manual-entry', formData);
-    if (res.data.success) {
-      setAuditResult(res.data.data);
-      setFormData({ userId: '', merchant: '', amount: '', description: '' });
+    return () => socket.disconnect();
+  }, []);
+
+  
+  const [showModal, setShowModal] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [formData, setFormData] = useState({ userId: '', merchant: '', amount: '', description: '' });
+  const [auditResult, setAuditResult] = useState(null);
+
+  const handleManualSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setAuditResult(null);
+
+    try {
+      const res = await axios.post('http://localhost:3000/api/v1/fraud/manual-entry', formData);
+      if (res.data.success) {
+        setAuditResult(res.data.data);
+        setFormData({ userId: '', merchant: '', amount: '', description: '' });
+      }
+    } catch (err) {
+      alert("Failed to audit manual entry: " + (err.response?.data?.error || err.message));
+    } finally {
+      setLoading(false);
     }
-  } catch (err) {
-    alert("Failed to audit manual entry: " + (err.response?.data?.error || err.message));
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   const [targetPayload, setTargetPayload] = useState(null);
   const [loadedFileName, setLoadedFileName] = useState('');
   const [scanning, setScanning] = useState(false);
   const [scanResult, setScanResult] = useState(null);
-  
+ 
 
-  const [dbCount, setDbCount] = useState(0); 
 
-  
   useEffect(() => {
     const fetchStats = async () => {
       try {
@@ -54,6 +81,8 @@ const handleManualSubmit = async (e) => {
     const targetFile = e.target.files[0];
     if (!targetFile) return;
     setLoadedFileName(targetFile.name);
+    setLogs([]); 
+    setScanResult(null);
 
     const docReader = new FileReader();
     docReader.onload = (event) => {
@@ -68,32 +97,32 @@ const handleManualSubmit = async (e) => {
   };
 
   const dispatchVerificationScan = async () => {
-  if (!targetPayload) return alert("Select an active transaction verification file.");
-  setScanning(true);
-  setScanResult(null);
+    if (!targetPayload) return alert("Select an active transaction verification file.");
+    
+    setScanning(true);
+    setScanResult(null);
+    setAvgSpeed(0); 
+    setLogs([]); 
 
-  try {
-    if (Array.isArray(targetPayload)) {
-      let lastResult = null;
+    const token = localStorage.getItem('auditorToken');
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+    try {
+      const payloadArray = Array.isArray(targetPayload) ? targetPayload : [targetPayload];
+
       
-      for (const currentTransaction of targetPayload) {
-        const response = await axios.post('http://localhost:3000/api/v1/fraud/validate', currentTransaction);
-        lastResult = response.data.data;
-      }
+      await axios.post(
+        'http://localhost:3000/api/v1/ingestion/trigger',
+        { payload: payloadArray },
+        { headers }
+      );
       
-      setScanResult(lastResult);
-      alert(`Batch processing complete! Ingested ${targetPayload.length} transactions successfully.`);
-    } else {
-      const response = await axios.post('http://localhost:3000/api/v1/fraud/validate', targetPayload);
-      setScanResult(response.data.data);
+    } catch (error) {
+      console.error("Pipeline communication failure:", error);
+      alert("Security pipeline processing engine error.");
+      setScanning(false);
     }
-  } catch (error) {
-    console.error("Pipeline communication failure:", error);
-    alert("Security pipeline processing engine error.");
-  } finally {
-    setScanning(false);
-  }
-};
+  };
 
   return (
     <div>
@@ -108,12 +137,11 @@ const handleManualSubmit = async (e) => {
         </button>
       </div>
 
-      
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '20px', marginBottom: '24px' }}>
         {[
           { label: 'Active Ingestion Jobs', data: scanning ? '1 Job' : '0 Jobs', subtitle: scanning ? 'AI scanning active' : 'Processing idle' },
-          { label: 'Total Records Ingested', data: dbCount.toLocaleString(), subtitle: 'Live MongoDB count' }, // 🌟 Dynamic Count!
-          { label: 'Avg Ingestion Speed', data: dbCount > 0 ? '1,850 rec/sec' : '0 rec/sec', subtitle: 'Pipeline transmission velocity' },
+          { label: 'Total Records Ingested', data: dbCount.toLocaleString(), subtitle: 'Live MongoDB count' },
+          { label: 'Avg Ingestion Speed', data: avgSpeed > 0 ? `${avgSpeed} rec/sec` : '0 rec/sec', subtitle: 'Pipeline transmission velocity' },
           { label: 'Last Batch Status', data: dbCount > 0 ? 'Success' : 'N/A', subtitle: scanResult ? 'Completed just now' : 'Waiting for input', highlight: dbCount > 0 }
         ].map((stat, i) => (
           <div key={i} style={{ backgroundColor: 'var(--card-bg)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
@@ -138,13 +166,31 @@ const handleManualSubmit = async (e) => {
         </div>
 
         <div style={{ backgroundColor: 'var(--card-bg)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column' }}>
-          <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: '700' }}>Ingestion Staging Vector</h4>
-          <div style={{ flexGrow: 1, backgroundColor: '#0f172a', padding: '14px', borderRadius: '8px', overflowY: 'auto', maxHeight: '180px' }}>
-            {targetPayload ? (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <h4 style={{ margin: '0', fontSize: '14px', fontWeight: '700' }}>Ingestion Staging Vector</h4>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+              {logs.length > 0 ? 'Live WebSocket Feed' : targetPayload ? 'Preview Mode' : 'Idle'}
+            </span>
+          </div>
+          
+          <div style={{ flexGrow: 1, backgroundColor: '#0f172a', padding: '14px', borderRadius: '8px', overflowY: 'auto', maxHeight: '180px', minHeight: '180px' }}>
+            
+            {/* TERMINAL UI LOGIC */}
+            {logs.length > 0 ? (
+              logs.map((log, index) => (
+                <div key={index} style={{ marginBottom: '4px', fontSize: '12px', fontFamily: 'monospace' }}>
+                  <span style={{ color: '#64748b' }}>[{log.timestamp}]</span>{' '}
+                  <span style={{ color: log.type === 'error' ? '#ef4444' : log.type === 'success' ? '#10b981' : log.type === 'warning' ? '#f59e0b' : '#38bdf8', marginLeft: '6px' }}>
+                    {log.message}
+                  </span>
+                </div>
+              ))
+            ) : targetPayload ? (
               <pre style={{ margin: 0, color: '#38bdf8', fontSize: '12px', fontFamily: 'monospace' }}>{JSON.stringify(targetPayload, null, 2)}</pre>
             ) : (
               <div style={{ color: '#475569', fontSize: '13px', fontFamily: 'monospace', textAlign: 'center', marginTop: '60px' }}>[Waiting system payload allocation staging manifests]</div>
             )}
+
           </div>
           <button
             onClick={dispatchVerificationScan}
@@ -156,8 +202,7 @@ const handleManualSubmit = async (e) => {
         </div>
       </div>
 
-      
-{/*--- MANUAL ENTRY MODAL --- */}
+      {/*--- MANUAL ENTRY MODAL --- */}
       {showModal && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
           <div style={{ backgroundColor: '#fff', padding: '28px', borderRadius: '12px', width: '450px', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)' }}>
@@ -241,7 +286,6 @@ const handleManualSubmit = async (e) => {
         </div>
       )}
 
-      
       {scanResult && (
         <div style={{ backgroundColor: 'var(--card-bg)', padding: '24px', borderRadius: '12px', border: `2px solid ${scanResult.status === 'FLAGGED' ? 'var(--danger-red)' : 'var(--success-green)'}` }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
