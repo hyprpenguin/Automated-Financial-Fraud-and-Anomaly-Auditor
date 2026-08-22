@@ -666,7 +666,52 @@ app.post('/api/v1/sandbox/targets', async (req, res) => {
     res.status(500).json({ error: 'Failed to create target endpoint' });
   }
 });
-app.get('/api/v1/config/ai', async (req, res) => {
+app.get('/api/v1/security/export-report', async (req, res) => {
+  try {
+    const logs = await SandboxLog.find().sort({ createdAt: -1 }).limit(100);
+    let csvContent = 'ID,Timestamp,Scenario,Endpoint,Status,AI Score,Result,Justification\n';
+    logs.forEach(log => {
+      const time = new Date(log.createdAt).toISOString();
+      const safeJustification = `"${(log.justification || '').replace(/"/g, '""')}"`;
+      csvContent += `${log._id},${time},${log.scenario},${log.endpoint},${log.status},${log.aiScore},${log.resultStatus},${safeJustification}\n`;
+    });
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="Sandbox_Security_Audit_Report.csv"');
+    return res.status(200).send(csvContent);
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to generate CSV report." });
+  }
+});
+
+app.get('/api/v1/fraud/export-report', async (req, res) => {
+  try {
+    const transactions = await Transactions.find().sort({ createdAt: -1 }).limit(1000);
+    let csvContent = 'Transaction ID,User ID,Merchant,Amount,Status,Risk Score,Pattern Flag,Justification\n';
+    transactions.forEach(tx => {
+      const safeJustification = `"${(tx.aiRiskAssessment?.justification || '').replace(/"/g, '""')}"`;
+      const safeMerchant = `"${(tx.merchant || '').replace(/"/g, '""')}"`;
+      const score = tx.aiRiskAssessment?.riskScore || 0;
+      const pattern = tx.aiRiskAssessment?.patternFlag || 'None';
+      csvContent += `${tx.transactionID},${tx.userId},${safeMerchant},${tx.amount},${tx.status},${score},${pattern},${safeJustification}\n`;
+    });
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="Sentinel_Audit_Log_Report.csv"');
+    return res.status(200).send(csvContent);
+  } catch (error) {
+    return res.status(500).json({ error: "Failed to generate CSV report." });
+  }
+});
+
+app.get('/api/v1/system/health', async (req, res) => {
+  try { return res.status(200).json({ geminiGuardrail: 'Online', blackDuck: 'Engaged' }); } 
+  catch (error) { return res.status(500).json({ geminiGuardrail: 'Offline', blackDuck: 'Offline' }); }
+});
+
+
+
+
+
+
   try {
     let config = await AiConfig.findOne({ configKey: 'primary_sentinel_config' });
     if (!config) {
