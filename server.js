@@ -32,7 +32,11 @@ app.use(cors());
 app.use(express.json());
 app.use(mongoSanitize());
 
-const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_auditor_key_123'; 
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('FATAL ERROR: JWT_SECRET is not defined in the .env file!');
+  process.exit(1); 
+}
 
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -310,7 +314,7 @@ app.put('/api/v1/fraud/override/:id', async (req, res) => {
 app.get('/api/v1/audit/metrics', async (req, res) => {
   try {
     const totalTransactions = await Transactions.countDocuments();
-    const totalReports = await Transactions.countDocuments({ "aiRiskAssessment.riskScore": { $exists: true } });
+    const totalReports = await Transactions.countDocuments({ status: { $ne: 'PENDING' } });
     const inReview = await Transactions.countDocuments({ status: 'FLAGGED' });
     const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
     const newIssuesToday = await Transactions.countDocuments({ status: 'FLAGGED', createdAt: { $gte: startOfDay } });
@@ -609,11 +613,23 @@ const seedSuperAdmin = async () => {
   try {
     const adminExists = await User.findOne({ role: 'SuperAdmin' });
     if (!adminExists) {
-      const hashedPassword = await bcrypt.hash('SuperAdmin123!', 10);
-      await User.create({ email: 'admin@sentinel.com', password: hashedPassword, role: 'SuperAdmin' });
-      console.log('🌱 Default Super Admin created!');
+      
+      const defaultEmail = process.env.SUPER_ADMIN_EMAIL;
+      const defaultPass = process.env.SUPER_ADMIN_PASSWORD;
+      
+      if (!defaultEmail || !defaultPass) {
+        console.warn('⚠️ No Super Admin credentials found in .env. Skipping default admin creation.');
+        return;
+      }
+
+      
+      const hashedPassword = await bcrypt.hash(defaultPass, 10);
+      await User.create({ email: defaultEmail, password: hashedPassword, role: 'SuperAdmin' });
+      console.log(`Default Super Admin created for ${defaultEmail}!`);
     }
-  } catch (err) {}
+  } catch (err) {
+    console.error("Failed to seed Super Admin:", err);
+  }
 };
 seedSuperAdmin();
 

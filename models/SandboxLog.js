@@ -24,7 +24,7 @@ const sandboxLogSchema = new mongoose.Schema({
   },
   resultStatus: { 
     type: String, 
-    required: true // 'Blocked (Red)', 'Flagged', or 'Succeeded'
+    required: true 
   },
   justification: { 
     type: String 
